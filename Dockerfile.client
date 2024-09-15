@@ -1,0 +1,26 @@
+# Use the official Go image
+FROM golang:1.18
+
+# Install dependencies
+RUN apt-get update && apt-get install -y libgl1-mesa-dev xorg
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the Go modules files
+COPY client/go.mod client/go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy the source code
+COPY client/ ./
+
+# Build the application
+RUN go build -o client main.go game.go
+
+# Set environment variables for GUI
+ENV DISPLAY=:0
+
+# Command to run the application
+CMD ["./client"]

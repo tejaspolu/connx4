@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connect4-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: connect4-server
+  template:
+    metadata:
+      labels:
+        app: connect4-server
+    spec:
+      containers:
+      - name: connect4-server
+        image: connect4registry2.azurecr.io/connect4-server:latest
+        ports:
+        - containerPort: 8080
