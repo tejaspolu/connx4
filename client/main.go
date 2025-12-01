@@ -19,6 +19,72 @@ import (
 )
 
 func main() {
+	a := app.New()
+	w := a.NewWindow("Connect 4")
+	w.Resize(fyne.NewSize(700, 600))
+
+	showMainMenu(w)
+
+	w.Show()
+	a.Run()
+}
+
+func showMainMenu(w fyne.Window) {
+	title := canvas.NewText("Connect 4", color.White)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.Alignment = fyne.TextAlignCenter
+	title.TextSize = 32
+
+	subtitle := canvas.NewText("Choose a mode", color.RGBA{200, 200, 200, 255})
+	subtitle.Alignment = fyne.TextAlignCenter
+	subtitle.TextSize = 18
+
+	onlineBtn := widget.NewButton("Online Multiplayer", func() {
+		startOnlineGame(w)
+	})
+
+	difficultyLabel := widget.NewLabel("AI Difficulty")
+	difficultySelect := widget.NewSelect([]string{
+		DifficultyEasy,
+		DifficultyMedium,
+		DifficultyHard,
+	}, nil)
+	difficultySelect.Selected = DifficultyMedium
+
+	singlePlayerBtn := widget.NewButton("Single Player vs AI", func() {
+		difficulty := difficultySelect.Selected
+		if difficulty == "" {
+			difficulty = DifficultyMedium
+		}
+		startAIGame(w, difficulty)
+	})
+
+	buttons := container.NewVBox(
+		layout.NewSpacer(),
+		title,
+		subtitle,
+		widget.NewSeparator(),
+		onlineBtn,
+		layout.NewSpacer(),
+		difficultyLabel,
+		difficultySelect,
+		singlePlayerBtn,
+		layout.NewSpacer(),
+	)
+
+	windowBackground := canvas.NewRectangle(color.RGBA{15, 27, 39, 255})
+
+	content := container.NewMax(
+		windowBackground,
+		container.NewPadded(buttons),
+	)
+
+	w.SetContent(content)
+}
+
+// startOnlineGame keeps the original multiplayer behavior, connecting
+// to the remote websocket server and syncing the board.
+func startOnlineGame(w fyne.Window) {
 	game := &Game{}
 	playerNumber := 0
 	playAgainConfirmed := false
@@ -27,15 +93,85 @@ func main() {
 	conn, _, err := websocket.Dial(ctx, "ws://4.255.33.74/ws", nil)
 	if err != nil {
 		log.Println("Error connecting to WebSocket:", err)
+		dialog.ShowError(err, w)
 		return
 	}
-	defer conn.Close(websocket.StatusInternalError, "Internal Error")
 
-	a := app.New()
-	w := a.NewWindow("Connect 4")
-	w.Resize(fyne.NewSize(700, 600))
+	statusLabel, cells, content := buildGameUI()
 
-	statusLabel := widget.NewLabel("Connecting to game...")
+	for i := 0; i < 6; i++ {
+		for j := 0; j < 7; j++ {
+			col := j
+			cells[i][j].SetOnTapped(func(_ int) {
+				handleBoardClickOnline(game, col, conn, playerNumber)
+			})
+		}
+	}
+
+	statusLabel.SetText("Connecting to game...")
+
+	w.SetContent(content)
+
+	w.SetOnClosed(func() {
+		_ = conn.Close(websocket.StatusNormalClosure, "window closed")
+	})
+
+	go func() {
+		for {
+			var msg map[string]interface{}
+			err := wsjson.Read(ctx, conn, &msg)
+			if err != nil {
+				log.Println("Error reading message:", err)
+				return
+			}
+
+			switch msg["type"] {
+			case "init":
+				playerNumber = int(msg["player"].(float64))
+				statusLabel.SetText(fmt.Sprintf("You are Player %d", playerNumber))
+			case "game_state":
+				gameData, _ := json.Marshal(msg["game"])
+				game.FromJSON(gameData)
+				updateBoardUI(game, cells)
+				updateStatusOnline(game, playerNumber, statusLabel)
+
+				if game.IsOver && !playAgainConfirmed {
+					promptPlayAgainOnline(w, conn, &playAgainConfirmed)
+				}
+			case "reset":
+				game = &Game{}
+				playAgainConfirmed = false
+				updateBoardUI(game, cells)
+				updateStatusOnline(game, playerNumber, statusLabel)
+			}
+		}
+	}()
+}
+
+// startAIGame runs a full single-player game against an AI opponent
+// with the selected difficulty, using the local Game logic.
+func startAIGame(w fyne.Window, difficulty string) {
+	game := NewGame()
+	humanPlayer := 1
+	aiPlayer := 2
+
+	statusLabel, cells, content := buildGameUI()
+
+	for i := 0; i < 6; i++ {
+		for j := 0; j < 7; j++ {
+			col := j
+			cells[i][j].SetOnTapped(func(_ int) {
+				handleBoardClickLocal(game, col, cells, statusLabel, difficulty, humanPlayer, aiPlayer, w)
+			})
+		}
+	}
+
+	statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. Your turn.", difficulty))
+	w.SetContent(content)
+}
+
+func buildGameUI() (*widget.Label, [][]*Slot, fyne.CanvasObject) {
+	statusLabel := widget.NewLabel("")
 	statusLabel.Alignment = fyne.TextAlignCenter
 	statusLabel.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -47,9 +183,7 @@ func main() {
 		for j := 0; j < 7; j++ {
 			row, col := i, j
 
-			slot := NewSlot(row, col, func(col int) {
-				handleBoardClick(game, col, conn, playerNumber)
-			})
+			slot := NewSlot(row, col, func(int) {})
 			cells[i][j] = slot
 			grid.Add(slot)
 		}
@@ -78,44 +212,10 @@ func main() {
 		),
 	)
 
-	w.SetContent(content)
-	w.Show()
-
-	go func() {
-		for {
-			var msg map[string]interface{}
-			err := wsjson.Read(ctx, conn, &msg)
-			if err != nil {
-				log.Println("Error reading message:", err)
-				return
-			}
-
-			switch msg["type"] {
-			case "init":
-				playerNumber = int(msg["player"].(float64))
-				statusLabel.SetText(fmt.Sprintf("You are Player %d", playerNumber))
-			case "game_state":
-				gameData, _ := json.Marshal(msg["game"])
-				game.FromJSON(gameData)
-				updateBoardUI(game, cells)
-				updateStatus(game, playerNumber, statusLabel)
-
-				if game.IsOver && !playAgainConfirmed {
-					promptPlayAgain(w, conn, &playAgainConfirmed)
-				}
-			case "reset":
-				game = &Game{}
-				playAgainConfirmed = false
-				updateBoardUI(game, cells)
-				updateStatus(game, playerNumber, statusLabel)
-			}
-		}
-	}()
-
-	a.Run()
+	return statusLabel, cells, content
 }
 
-func handleBoardClick(game *Game, column int, conn *websocket.Conn, playerNumber int) {
+func handleBoardClickOnline(game *Game, column int, conn *websocket.Conn, playerNumber int) {
 	if game.IsOver || game.CurrentTurn != playerNumber {
 		return
 	}
@@ -131,6 +231,44 @@ func handleBoardClick(game *Game, column int, conn *websocket.Conn, playerNumber
 	}
 }
 
+func handleBoardClickLocal(game *Game, column int, cells [][]*Slot, statusLabel *widget.Label, difficulty string, humanPlayer, aiPlayer int, w fyne.Window) {
+	if game.IsOver || game.CurrentTurn != humanPlayer {
+		return
+	}
+
+	if !game.DropPiece(column) {
+		return
+	}
+
+	updateBoardUI(game, cells)
+	updateStatusLocal(game, humanPlayer, aiPlayer, statusLabel, difficulty)
+
+	if game.IsOver {
+		promptPlayAgainLocal(w, game, cells, statusLabel, difficulty, humanPlayer, aiPlayer)
+		return
+	}
+
+	if game.CurrentTurn != aiPlayer || game.IsOver {
+		return
+	}
+
+	aiMove := GetAIMove(game, difficulty, aiPlayer)
+	if aiMove == -1 {
+		game.IsOver = true
+		updateStatusLocal(game, humanPlayer, aiPlayer, statusLabel, difficulty)
+		promptPlayAgainLocal(w, game, cells, statusLabel, difficulty, humanPlayer, aiPlayer)
+		return
+	}
+
+	game.DropPiece(aiMove)
+	updateBoardUI(game, cells)
+	updateStatusLocal(game, humanPlayer, aiPlayer, statusLabel, difficulty)
+
+	if game.IsOver {
+		promptPlayAgainLocal(w, game, cells, statusLabel, difficulty, humanPlayer, aiPlayer)
+	}
+}
+
 func updateBoardUI(game *Game, cells [][]*Slot) {
 	for i := 0; i < 6; i++ {
 		for j := 0; j < 7; j++ {
@@ -141,7 +279,7 @@ func updateBoardUI(game *Game, cells [][]*Slot) {
 	}
 }
 
-func updateStatus(game *Game, playerNumber int, statusLabel *widget.Label) {
+func updateStatusOnline(game *Game, playerNumber int, statusLabel *widget.Label) {
 	if game.IsOver {
 		if game.Winner == 0 {
 			statusLabel.SetText("It's a tie!")
@@ -159,7 +297,25 @@ func updateStatus(game *Game, playerNumber int, statusLabel *widget.Label) {
 	}
 }
 
-func promptPlayAgain(w fyne.Window, conn *websocket.Conn, playAgainConfirmed *bool) {
+func updateStatusLocal(game *Game, humanPlayer, aiPlayer int, statusLabel *widget.Label, difficulty string) {
+	if game.IsOver {
+		if game.Winner == 0 {
+			statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. It's a tie!", difficulty))
+		} else if game.Winner == humanPlayer {
+			statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. You win!", difficulty))
+		} else if game.Winner == aiPlayer {
+			statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. You lose!", difficulty))
+		}
+	} else {
+		if game.CurrentTurn == humanPlayer {
+			statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. Your turn.", difficulty))
+		} else if game.CurrentTurn == aiPlayer {
+			statusLabel.SetText(fmt.Sprintf("Single Player - %s AI. AI thinking...", difficulty))
+		}
+	}
+}
+
+func promptPlayAgainOnline(w fyne.Window, conn *websocket.Conn, playAgainConfirmed *bool) {
 	dialog.ShowConfirm("Play Again", "Do you want to play again?", func(confirmed bool) {
 		if confirmed {
 			*playAgainConfirmed = true
@@ -176,6 +332,19 @@ func promptPlayAgain(w fyne.Window, conn *websocket.Conn, playAgainConfirmed *bo
 			if err != nil {
 				log.Println("Error closing connection:", err)
 			}
+			w.Close()
+		}
+	}, w)
+}
+
+func promptPlayAgainLocal(w fyne.Window, game *Game, cells [][]*Slot, statusLabel *widget.Label, difficulty string, humanPlayer, aiPlayer int) {
+	dialog.ShowConfirm("Play Again", "Do you want to play again?", func(confirmed bool) {
+		if confirmed {
+			newGame := NewGame()
+			*game = *newGame
+			updateBoardUI(game, cells)
+			updateStatusLocal(game, humanPlayer, aiPlayer, statusLabel, difficulty)
+		} else {
 			w.Close()
 		}
 	}, w)
@@ -214,6 +383,10 @@ func (s *Slot) Tapped(*fyne.PointEvent) {
 }
 
 func (s *Slot) TappedSecondary(*fyne.PointEvent) {}
+
+func (s *Slot) SetOnTapped(handler func(col int)) {
+	s.onTapped = handler
+}
 
 type slotRenderer struct {
 	slot    *Slot

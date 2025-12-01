@@ -2,6 +2,7 @@
 a real-time multiplayer connect 4 game developed in go, with a gui client and a websocket-based server. server is containerized using docker and deployed on a kubernetes cluster
 
 ## features
+- **single-player vs AI:** play connect 4 against an AI opponent with **easy**, **medium**, and **hard** difficulty levels
 - **real-time multiplayer gameplay:** play connect 4 against other players in real-time
 - **cross-platform gui client:** built with the fyne library for a consistent experience on windows, macos, and linux
 - **websocket communication:** fast and efficient real-time updates between the client and server
@@ -17,6 +18,7 @@ a real-time multiplayer connect 4 game developed in go, with a gui client and a 
 - **websockets:** enables real-time communication between clients and the server
 
 ### Cloning the Repository
+### running the client (single-player ai and online)
 clone the repository to your local machine:
 
 ```git clone https://github.com/tejaspolu/connx4.git```
@@ -35,7 +37,12 @@ download dependencies:
 
 run the game:
 
-```go run main.go game.go```
+```go run .```
+
+when the client starts, you will see a **mode selection screen**:
+
+- choose **\"Single Player vs AI\"** and select a difficulty (**Easy**, **Medium**, or **Hard**) to play locally against the AI.
+- choose **\"Online Multiplayer\"** to connect to the remote websocket server and play against another human (server must be running/reachable).
 
 ## player view:
 ![image](images/game.png)
